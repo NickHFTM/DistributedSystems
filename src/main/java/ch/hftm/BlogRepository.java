@@ -14,6 +14,13 @@ public class BlogRepository implements PanacheRepository<Blog> {
         return listAll();
     }
 
+    public List<Blog> searchBlogs(String title) {
+        return find(
+                "lower(title) like ?1",
+                "%" + title.toLowerCase() + "%"
+        ).list();
+    }
+
     public Blog getBlog(long id) {
         return findById(id);
     }
@@ -25,17 +32,22 @@ public class BlogRepository implements PanacheRepository<Blog> {
     }
 
     @Transactional
-    public void updateBlog(long id, Blog updatedBlog) {
+    public boolean updateBlog(long id, Blog updatedBlog) {
+
         Blog blog = findById(id);
 
-        if (blog != null) {
-            blog.setTitle(updatedBlog.getTitle());
-            blog.setContent(updatedBlog.getContent());
+        if (blog == null) {
+            return false;
         }
+
+        blog.setTitle(updatedBlog.getTitle());
+        blog.setContent(updatedBlog.getContent());
+
+        return true;
     }
 
     @Transactional
-    public void deleteBlog(long id) {
-        deleteById(id);
+    public boolean deleteBlog(long id) {
+        return deleteById(id);
     }
 }

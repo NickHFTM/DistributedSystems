@@ -8,6 +8,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.Id;
 import jakarta.persistence.OneToMany;
+import jakarta.validation.constraints.NotBlank;
 
 @Entity
 public class Blog {
@@ -16,7 +17,10 @@ public class Blog {
     @GeneratedValue
     private Long id;
 
+    @NotBlank(message = "Der Titel darf nicht leer sein")
     private String title;
+
+    @NotBlank(message = "Der Inhalt darf nicht leer sein")
     private String content;
 
     @OneToMany(mappedBy = "blog", cascade = CascadeType.ALL)
@@ -52,9 +56,5 @@ public class Blog {
 
     public List<Comment> getComments() {
         return comments;
-    }
-
-    public void setComments(List<Comment> comments) {
-        this.comments = comments;
     }
 }

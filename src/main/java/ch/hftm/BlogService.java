@@ -12,14 +12,20 @@ public class BlogService {
     @Inject
     BlogRepository blogRepository;
 
-    public List<Blog> getBlogs() {
+    public List<Blog> getBlogs(String title) {
+
+        if (title != null && !title.isBlank()) {
+            Log.info("Searching blogs with title: " + title);
+            return blogRepository.searchBlogs(title);
+        }
+
         var blogs = blogRepository.getBlogs();
         Log.info("Returning " + blogs.size() + " blogs");
+
         return blogs;
     }
 
     public Blog getBlog(long id) {
-        Log.info("Returning blog with id " + id);
         return blogRepository.getBlog(id);
     }
 
@@ -28,13 +34,13 @@ public class BlogService {
         blogRepository.addBlog(blog);
     }
 
-    public void updateBlog(long id, Blog blog) {
-        Log.info("Updating blog with id " + id);
-        blogRepository.updateBlog(id, blog);
+    public boolean updateBlog(long id, Blog blog) {
+        Log.info("Updating blog " + id);
+        return blogRepository.updateBlog(id, blog);
     }
 
-    public void deleteBlog(long id) {
-        Log.info("Deleting blog with id " + id);
-        blogRepository.deleteBlog(id);
+    public boolean deleteBlog(long id) {
+        Log.info("Deleting blog " + id);
+        return blogRepository.deleteBlog(id);
     }
 }
