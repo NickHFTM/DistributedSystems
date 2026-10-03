@@ -46,14 +46,22 @@ public class BlogResource {
     }
 
     @POST
-    public Response addBlog(@Valid Blog blog) {
+public Response addBlog(@Valid CreateBlogRequest request) {
 
-        blogService.addBlog(blog);
+    Blog blog = new Blog(request.title, request.content);
 
-        return Response.status(Response.Status.CREATED)
-                .entity(blog)
-                .build();
-    }
+    blogService.addBlog(blog);
+
+    BlogResponse response = new BlogResponse(
+            blog.getId(),
+            blog.getTitle(),
+            blog.getContent()
+    );
+
+    return Response.status(Response.Status.CREATED)
+            .entity(response)
+            .build();
+}
 
     @PUT
     @Path("/{id}")
