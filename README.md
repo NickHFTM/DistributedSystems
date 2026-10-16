@@ -60,3 +60,45 @@ Beispiel einer Fehlerantwort:
   "error": "Blog nicht gefunden",
   "message": "Es existiert kein Blog mit der ID 1"
 }
+
+``` 
+## DTOs und Mapping
+
+Für den Endpoint `POST /blogs` werden eigene Request- und Response-DTOs verwendet.
+
+### CreateBlogRequest
+
+Der Request-DTO gibt nur folgende Felder frei:
+
+- `title`
+- `content`
+
+Felder wie `id` oder `comments` können beim Erstellen eines Blogs nicht direkt vom Client gesetzt werden.
+
+### BlogResponse
+
+Der Response-DTO gibt folgende Felder zurück:
+
+- `id`
+- `title`
+- `content`
+
+### Mapping
+
+Das Mapping erfolgt in der REST-Ressource.
+
+Ablauf:
+
+`CreateBlogRequest -> Blog -> BlogResponse`
+
+Beispiel:
+
+```java
+Blog blog = new Blog(request.title, request.content);
+blogService.addBlog(blog);
+
+BlogResponse response = new BlogResponse(
+    blog.getId(),
+    blog.getTitle(),
+    blog.getContent()
+);
