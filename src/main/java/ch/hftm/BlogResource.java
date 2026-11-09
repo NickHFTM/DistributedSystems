@@ -3,6 +3,9 @@ package ch.hftm;
 import java.util.List;
 import java.util.Map;
 
+import io.quarkus.security.identity.SecurityIdentity;
+import jakarta.annotation.security.PermitAll;
+import jakarta.annotation.security.RolesAllowed;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.validation.Valid;
@@ -14,6 +17,8 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.Response;
+import ch.hftm.dto.CreateBlogRequest;
+import ch.hftm.dto.BlogResponse;
 
 @Path("/blogs")
 @ApplicationScoped
@@ -22,13 +27,18 @@ public class BlogResource {
     @Inject
     BlogService blogService;
 
+    @Inject
+    SecurityIdentity securityIdentity;
+
     @GET
+    @PermitAll
     public List<Blog> getBlogs(@QueryParam("title") String title) {
         return blogService.getBlogs(title);
     }
 
     @GET
     @Path("/{id}")
+    @PermitAll
     public Response getBlog(@PathParam("id") long id) {
 
         Blog blog = blogService.getBlog(id);
@@ -46,30 +56,60 @@ public class BlogResource {
     }
 
     @POST
-public Response addBlog(@Valid CreateBlogRequest request) {
+    @RolesAllowed({"author", "admin"})
+    public Response addBlog(@Valid CreateBlogRequest request) {
 
-    Blog blog = new Blog(request.title, request.content);
+        Blog blog = new Blog(request.title, request.content);
 
-    blogService.addBlog(blog);
+        String username = securityIdentity.getPrincipal().getName();
+        blog.setOwner(username);
 
-    BlogResponse response = new BlogResponse(
-            blog.getId(),
-            blog.getTitle(),
-            blog.getContent()
-    );
+        blogService.addBlog(blog);
 
-    return Response.status(Response.Status.CREATED)
-            .entity(response)
-            .build();
-}
+        BlogResponse response = new BlogResponse(
+                blog.getId(),
+                blog.getTitle(),
+                blog.getContent()
+        );
+
+        return Response.status(Response.Status.CREATED)
+                .entity(response)
+                .build();
+    }
 
     @PUT
     @Path("/{id}")
+    @RolesAllowed({"author", "admin"})
     public Response updateBlog(
             @PathParam("id") long id,
-            @Valid Blog blog) {
+            @Valid Blog updatedBlog) {
 
-        boolean updated = blogService.updateBlog(id, blog);
+        Blog existingBlog = blogService.getBlog(id);
+
+        if (existingBlog == null) {
+            return Response.status(Response.Status.NOT_FOUND)
+                    .entity(Map.of(
+                            "error", "Blog nicht gefunden",
+                            "message", "Es existiert kein Blog mit der ID " + id
+                    ))
+                    .build();
+        }
+
+        String username = securityIdentity.getPrincipal().getName();
+
+        boolean isAdmin = securityIdentity.hasRole("admin");
+        boolean isOwner = username.equals(existingBlog.getOwner());
+
+        if (!isAdmin && !isOwner) {
+            return Response.status(Response.Status.FORBIDDEN)
+                    .entity(Map.of(
+                            "error", "Zugriff verweigert",
+                            "message", "Du darfst nur deine eigenen Blogs bearbeiten"
+                    ))
+                    .build();
+        }
+
+        boolean updated = blogService.updateBlog(id, updatedBlog);
 
         if (!updated) {
             return Response.status(Response.Status.NOT_FOUND)
@@ -81,11 +121,12 @@ public Response addBlog(@Valid CreateBlogRequest request) {
                     .build();
         }
 
-        return Response.ok(blog).build();
+        return Response.ok(updatedBlog).build();
     }
 
     @DELETE
     @Path("/{id}")
+    @RolesAllowed("admin")
     public Response deleteBlog(@PathParam("id") long id) {
 
         boolean deleted = blogService.deleteBlog(id);

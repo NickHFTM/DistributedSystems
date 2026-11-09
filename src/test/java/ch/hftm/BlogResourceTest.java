@@ -7,19 +7,22 @@ import static org.hamcrest.Matchers.notNullValue;
 import org.junit.jupiter.api.Test;
 
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.security.TestSecurity;
 import jakarta.ws.rs.core.MediaType;
 
 @QuarkusTest
 public class BlogResourceTest {
 
     @Test
+    @TestSecurity(user = "author1", roles = {"author"})
     void testCreateBlog() {
+
         given()
             .contentType(MediaType.APPLICATION_JSON)
             .body("""
                 {
-                  "title": "REST Test",
-                  "content": "Testinhalt"
+                  "title": "REST Assured Test",
+                  "content": "Dieser Blog wurde im Test erstellt."
                 }
                 """)
         .when()
@@ -27,12 +30,17 @@ public class BlogResourceTest {
         .then()
             .statusCode(201)
             .body("id", notNullValue())
-            .body("title", equalTo("REST Test"))
-            .body("content", equalTo("Testinhalt"));
+            .body("title", equalTo("REST Assured Test"))
+            .body(
+                "content",
+                equalTo("Dieser Blog wurde im Test erstellt.")
+            );
     }
 
     @Test
+    @TestSecurity(user = "author1", roles = {"author"})
     void testInvalidBlog() {
+
         given()
             .contentType(MediaType.APPLICATION_JSON)
             .body("""

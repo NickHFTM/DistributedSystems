@@ -15,11 +15,11 @@ public class BlogServiceTest {
     void listingAndAddingBlogs() {
         // Arrange
         Blog blog = new Blog("Testing Blog", "This is my testing blog");
-        int blogsBefore = blogService.getBlogs().size();
+        int blogsBefore = blogService.getBlogs(null).size();
 
         // Act
         blogService.addBlog(blog);
-        List<Blog> blogs = blogService.getBlogs();
+        List<Blog> blogs = blogService.getBlogs(null);
 
         // Assert
         assertEquals(blogsBefore + 1, blogs.size());

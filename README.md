@@ -4,6 +4,15 @@ Dieses Projekt implementiert eine REST-API zur Verwaltung von Blog-Beiträgen mi
 
 Die REST-Schnittstelle basiert auf **Jakarta REST**. Die Daten werden im JSON-Format übertragen und mit Hibernate ORM / Panache persistiert.
 
+Zusätzlich verfügt die API über:
+
+- Bean Validation
+- Request- und Response-DTOs
+- rollenbasierte Zugriffskontrolle
+- Authentifizierung mit OpenID Connect / Keycloak
+- benutzerbezogene Ownership-Prüfung
+- automatisierte REST- und Security-Tests
+
 ---
 
 # REST-Design
@@ -12,163 +21,14 @@ Die API stellt Funktionen zum Erstellen, Lesen, Aktualisieren, Löschen und Such
 
 ## Endpoints
 
-| HTTP-Methode | Pfad | Beschreibung |
-|---|---|---|
-| GET | `/blogs` | Gibt alle Blog-Beiträge zurück |
-| GET | `/blogs?title={title}` | Sucht Blog-Beiträge anhand des Titels |
-| GET | `/blogs/{id}` | Gibt einen bestimmten Blog-Beitrag zurück |
-| POST | `/blogs` | Erstellt einen neuen Blog-Beitrag |
-| PUT | `/blogs/{id}` | Aktualisiert einen bestehenden Blog-Beitrag |
-| DELETE | `/blogs/{id}` | Löscht einen bestehenden Blog-Beitrag |
-
----
-
-## GET /blogs
-
-Gibt alle vorhandenen Blog-Beiträge zurück.
-
-Beispiel:
-
-```text
-GET /blogs
-```
-
-Erwarteter Statuscode:
-
-```text
-200 OK
-```
-
-Zusätzlich kann mit dem Query-Parameter `title` nach einem Blog gesucht werden.
-
-Beispiel:
-
-```text
-GET /blogs?title=quarkus
-```
-
-Es werden alle Blogs zurückgegeben, deren Titel den angegebenen Text enthält.
-
----
-
-## GET /blogs/{id}
-
-Liefert einen einzelnen Blog anhand seiner ID.
-
-Beispiel:
-
-```text
-GET /blogs/1
-```
-
-Falls der Blog existiert:
-
-```text
-200 OK
-```
-
-Falls kein Blog mit dieser ID existiert:
-
-```text
-404 Not Found
-```
-
-Beispiel einer Fehlerantwort:
-
-```json
-{
-  "error": "Blog nicht gefunden",
-  "message": "Es existiert kein Blog mit der ID 1"
-}
-```
-
----
-
-## POST /blogs
-
-Erstellt einen neuen Blog-Beitrag.
-
-Beispiel:
-
-```text
-POST /blogs
-```
-
-Request Body:
-
-```json
-{
-  "title": "Quarkus REST",
-  "content": "Mein erster REST-Beitrag"
-}
-```
-
-Bei erfolgreicher Erstellung:
-
-```text
-201 Created
-```
-
-Titel und Inhalt werden mit Jakarta Bean Validation geprüft und dürfen nicht leer sein.
-
----
-
-## PUT /blogs/{id}
-
-Aktualisiert einen bestehenden Blog-Beitrag.
-
-Beispiel:
-
-```text
-PUT /blogs/1
-```
-
-Request Body:
-
-```json
-{
-  "title": "Neuer Titel",
-  "content": "Aktualisierter Inhalt"
-}
-```
-
-Falls der Blog existiert:
-
-```text
-200 OK
-```
-
-Falls kein Blog mit der angegebenen ID existiert:
-
-```text
-404 Not Found
-```
-
-Auch bei einer Aktualisierung werden Titel und Inhalt mit Bean Validation geprüft.
-
----
-
-## DELETE /blogs/{id}
-
-Löscht einen bestehenden Blog-Beitrag.
-
-Beispiel:
-
-```text
-DELETE /blogs/1
-```
-
-Bei erfolgreichem Löschen:
-
-```text
-204 No Content
-```
-
-Falls kein entsprechender Blog existiert:
-
-```text
-404 Not Found
-```
+| HTTP-Methode | Pfad | Beschreibung | Zugriff |
+|---|---|---|---|
+| GET | `/blogs` | Gibt alle Blog-Beiträge zurück | öffentlich |
+| GET | `/blogs?title={title}` | Sucht Blog-Beiträge anhand des Titels | öffentlich |
+| GET | `/blogs/{id}` | Gibt einen bestimmten Blog-Beitrag zurück | öffentlich |
+| POST | `/blogs` | Erstellt einen neuen Blog-Beitrag | `author`, `admin` |
+| PUT | `/blogs/{id}` | Aktualisiert einen bestehenden Blog-Beitrag | `author`, `admin` + Ownership |
+| DELETE | `/blogs/{id}` | Löscht einen bestehenden Blog-Beitrag | `admin` |
 
 ---
 
@@ -176,12 +36,10 @@ Falls kein entsprechender Blog existiert:
 
 Für die Eingabevalidierung wird **Jakarta Bean Validation** verwendet.
 
-Zurzeit gelten folgende Regeln:
+Aktuell gelten folgende Regeln:
 
 - `title` darf nicht leer sein.
 - `content` darf nicht leer sein.
-
-Dafür wird `@NotBlank` verwendet.
 
 Ein ungültiger Request wie
 
@@ -192,7 +50,7 @@ Ein ungültiger Request wie
 }
 ```
 
-wird mit
+wird bei einem korrekt authentifizierten Benutzer mit
 
 ```text
 400 Bad Request
@@ -200,59 +58,51 @@ wird mit
 
 abgelehnt.
 
+Nicht authentifizierte Benutzer erhalten bei geschützten Endpunkten zuerst
+
+```text
+401 Unauthorized
+```
+
 ---
 
 # DTOs und Mapping
 
-Für den Endpoint `POST /blogs` werden eigene Request- und Response-DTOs verwendet.
-
-Dadurch wird die interne Datenbank-Entity nicht direkt als Vertrag der REST-API verwendet.
+Für `POST /blogs` werden eigene Request- und Response-DTOs verwendet.
 
 ## CreateBlogRequest
 
-`CreateBlogRequest` definiert, welche Daten ein Client beim Erstellen eines Blog-Beitrags senden darf.
-
 Freigegebene Felder:
 
 - `title`
 - `content`
 
-Nicht direkt freigegeben sind beispielsweise:
+Nicht direkt freigegeben sind:
 
 - `id`
 - `comments`
+- `owner`
 
-Die `id` wird von der Datenbank erzeugt und kann deshalb nicht durch den Client gesetzt werden.
-
-Beispiel:
-
-```json
-{
-  "title": "Quarkus REST",
-  "content": "Mein Blog-Beitrag"
-}
-```
+Die `id` wird von der Datenbank erzeugt. Der `owner` wird aus dem angemeldeten Benutzer ermittelt.
 
 ## BlogResponse
 
-`BlogResponse` definiert die Daten, die nach dem Erstellen eines Blogs an den Client zurückgegeben werden.
-
-Freigegebene Felder:
+Der Response enthält:
 
 - `id`
 - `title`
 - `content`
 
-Dadurch kann gezielt gesteuert werden, welche Informationen über die REST-API nach außen gelangen.
+Interne Felder wie `owner` werden nicht direkt freigegeben.
 
 ## Mapping
-
-Beim Erstellen eines Blogs erfolgt das Mapping in mehreren Schritten:
 
 ```text
 CreateBlogRequest
         ↓
       Blog
+        ↓
+Owner aus SecurityIdentity
         ↓
    Datenbank
         ↓
@@ -261,301 +111,194 @@ CreateBlogRequest
   BlogResponse
 ```
 
-Der Request-DTO wird zuerst in eine `Blog`-Entity umgewandelt:
+Beispiel:
 
 ```java
 Blog blog = new Blog(request.title, request.content);
+
+String username = securityIdentity.getPrincipal().getName();
+blog.setOwner(username);
+
 blogService.addBlog(blog);
 ```
-
-Danach wird aus der Entity ein `BlogResponse` erzeugt:
-
-```java
-BlogResponse response = new BlogResponse(
-    blog.getId(),
-    blog.getTitle(),
-    blog.getContent()
-);
-```
-
-Der Client erhält dadurch nur die vorgesehenen Daten.
-
----
-
-# Automatisierte Tests
-
-Die REST-API wird mit **REST Assured** und `@QuarkusTest` automatisiert getestet.
-
-Die Tests befinden sich unter:
-
-```text
-src/test/java/ch/hftm/
-```
-
-Getestet werden unter anderem:
-
-- erfolgreiches Erstellen eines Blog-Beitrags
-- Validierungsfehler bei ungültigen Eingaben
-- erwartete HTTP-Statuscodes
-- REST-Responses
-
-Die Tests können mit folgendem Befehl ausgeführt werden:
-
-```bash
-./mvnw test
-```
-
-Ein gültiger POST-Request muss beispielsweise `201 Created` zurückgeben.
-
-Ein Request mit leerem Titel oder Inhalt muss dagegen mit `400 Bad Request` abgelehnt werden.
-
----
-
-# CORS
-
-CORS wird verwendet, um festzulegen, welche Frontends von einer anderen Origin auf die REST-API zugreifen dürfen.
-
-Die Konfiguration befindet sich in:
-
-```text
-src/main/resources/application.properties
-```
-
-Beispiel:
-
-```properties
-quarkus.http.cors.enabled=true
-quarkus.http.cors.origins=http://localhost:3000
-quarkus.http.cors.methods=GET,POST,PUT,DELETE
-quarkus.http.cors.headers=Content-Type,Authorization
-```
-
-Damit darf das konfigurierte Frontend auf die API zugreifen.
-
-Für eine produktive Umgebung muss die Origin an die tatsächliche Frontend-Adresse angepasst werden.
-
-Eine unnötig offene CORS-Konfiguration sollte vermieden werden.
-
----
-
-# API Security
-
-Für die Blog-API sind verschiedene Risiken aus der OWASP API Security Top 10 relevant.
-
-## Broken Object Level Authorization
-
-Die API verwendet IDs in Endpoints wie:
-
-```text
-GET /blogs/{id}
-PUT /blogs/{id}
-DELETE /blogs/{id}
-```
-
-Ohne Autorisierung könnte ein Benutzer auf fremde Blog-Einträge zugreifen oder diese verändern.
-
-**Status:** Noch nicht vollständig abgedeckt.
-
-Eine Zugriffskontrolle über Benutzerrollen ist vorgesehen.
-
----
-
-## Broken Authentication
-
-Für schreibende Zugriffe wird eine sichere Authentifizierung benötigt.
-
-Für die Authentifizierung wird Keycloak verwendet.
-
-**Status:** In Vorbereitung.
-
----
-
-## Broken Object Property Level Authorization
-
-Wenn Entities direkt als Request-Objekte verwendet werden, könnten Eigenschaften übergeben werden, die ein Client nicht verändern können sollte.
-
-Durch `CreateBlogRequest` wird festgelegt, welche Eigenschaften beim Erstellen eines Blogs akzeptiert werden:
-
-- `title`
-- `content`
-
-Felder wie `id` oder `comments` können nicht direkt gesetzt werden.
-
-**Status:** Teilweise durch DTOs abgedeckt.
-
----
-
-## Unrestricted Resource Consumption
-
-Ein Client könnte sehr viele Requests senden oder sehr große Datenmengen abrufen.
-
-Aktuell existieren noch:
-
-- kein Rate Limiting
-- keine Pagination
-- keine Begrenzung der Anzahl Requests
-
-**Status:** Noch nicht abgedeckt.
-
----
-
-## Security Misconfiguration
-
-Fehlerhafte Konfigurationen können dazu führen, dass eine API unnötig offen ist.
-
-Ein Beispiel dafür ist eine zu offene CORS-Konfiguration.
-
-CORS wird deshalb auf die benötigte Origin und die benötigten HTTP-Methoden eingeschränkt.
-
-**Status:** Teilweise abgedeckt.
 
 ---
 
 # Berechtigungskonzept
 
-Für die Blog-API wird ein rollenbasiertes Berechtigungskonzept verwendet.
+Die Blog-API verwendet eine Kombination aus:
 
-## Öffentliche Endpunkte
+1. rollenbasierter Zugriffskontrolle
+2. benutzerbezogener Ownership-Prüfung
 
-Das Lesen von Blog-Beiträgen soll ohne Login möglich sein.
-
-| Methode | Endpoint | Zugriff |
-|---|---|---|
-| GET | `/blogs` | öffentlich |
-| GET | `/blogs/{id}` | öffentlich |
-
----
-
-## Benutzerrollen
-
-Für die Blog-API werden folgende Rollen verwendet:
+## Rollen
 
 ### reader
 
 Ein `reader` kann Blog-Beiträge lesen.
 
-Da die GET-Endpunkte öffentlich erreichbar sind, ist für das reine Lesen aktuell kein Login notwendig.
+Da die GET-Endpunkte öffentlich sind, ist dafür aktuell kein Login notwendig.
 
 ### author
 
 Ein `author` darf:
 
-- Blog-Beiträge lesen
-- neue Blog-Beiträge erstellen
-- bestehende Blog-Beiträge aktualisieren
+- Blogs lesen
+- neue Blogs erstellen
+- eigene Blogs bearbeiten
+
+Ein `author` darf:
+
+- keine fremden Blogs bearbeiten
+- keine Blogs löschen
 
 ### admin
 
 Ein `admin` darf:
 
-- Blog-Beiträge lesen
-- Blog-Beiträge erstellen
-- Blog-Beiträge aktualisieren
-- Blog-Beiträge löschen
+- Blogs lesen
+- Blogs erstellen
+- alle Blogs bearbeiten
+- Blogs löschen
+
+## Zugriffsmatrix
+
+| Funktion | öffentlich | reader | author | admin |
+|---|---:|---:|---:|---:|
+| Blogs lesen | Ja | Ja | Ja | Ja |
+| Blog erstellen | Nein | Nein | Ja | Ja |
+| Eigenen Blog bearbeiten | Nein | Nein | Ja | Ja |
+| Fremden Blog bearbeiten | Nein | Nein | Nein | Ja |
+| Blog löschen | Nein | Nein | Nein | Ja |
 
 ---
 
-## Zugriffsregeln
+# Umsetzung der Zugriffskontrolle
 
-| Methode | Endpoint | Berechtigung |
-|---|---|---|
-| GET | `/blogs` | öffentlich |
-| GET | `/blogs/{id}` | öffentlich |
-| POST | `/blogs` | `author`, `admin` |
-| PUT | `/blogs/{id}` | `author`, `admin` |
-| DELETE | `/blogs/{id}` | `admin` |
+Für öffentliche Endpunkte wird verwendet:
 
-Die Regeln sollen in der nächsten Einheit mit Quarkus OIDC und `@RolesAllowed` umgesetzt werden.
+```java
+@PermitAll
+```
 
-Beispiel:
+Für das Erstellen und Bearbeiten:
 
 ```java
 @RolesAllowed({"author", "admin"})
-@POST
-public Response addBlog(...) {
-    // ...
-}
 ```
 
-Für das Löschen ist ausschließlich die Rolle `admin` vorgesehen:
+Für das Löschen:
 
 ```java
 @RolesAllowed("admin")
-@DELETE
-@Path("/{id}")
-public Response deleteBlog(...) {
-    // ...
+```
+
+Zusätzlich wird `SecurityIdentity` verwendet, um den aktuell angemeldeten Benutzer zu identifizieren.
+
+```java
+@Inject
+SecurityIdentity securityIdentity;
+```
+
+Benutzername:
+
+```java
+String username = securityIdentity.getPrincipal().getName();
+```
+
+Admin-Prüfung:
+
+```java
+boolean isAdmin = securityIdentity.hasRole("admin");
+```
+
+Ownership-Prüfung:
+
+```java
+boolean isOwner = username.equals(existingBlog.getOwner());
+
+if (!isAdmin && !isOwner) {
+    return Response.status(Response.Status.FORBIDDEN).build();
 }
 ```
+
+Damit reicht die Rolle `author` allein nicht aus. Ein Author muss zusätzlich Besitzer des Blogs sein.
+
+---
+
+# HTTP-Statuscodes der Security
+
+| Situation | HTTP-Status |
+|---|---|
+| Öffentlicher Request erfolgreich | `200 OK` |
+| Geschützter Endpoint ohne Login | `401 Unauthorized` |
+| Benutzer angemeldet, Rolle fehlt | `403 Forbidden` |
+| Author bearbeitet fremden Blog | `403 Forbidden` |
+| Ressource existiert nicht | `404 Not Found` |
+| Blog erfolgreich erstellt | `201 Created` |
+| Blog erfolgreich gelöscht | `204 No Content` |
 
 ---
 
 # Keycloak
 
-Für Authentifizierung und Rollenverwaltung wird lokal Keycloak verwendet.
+Für Authentifizierung und Rollenverwaltung wird **Keycloak** verwendet.
+
+Im Projekt wurden beide geforderten Varianten erfolgreich getestet:
+
+1. eigener Keycloak-Docker-Container
+2. Quarkus Dev Services for Keycloak
+
+---
+
+# Variante 1 – Eigener Keycloak-Container
 
 ## Docker-Setup
 
-Das lokale Setup besteht aus zwei Docker-Containern:
+Das lokale Setup besteht aus zwei Containern:
 
 | Container | Image | Aufgabe |
 |---|---|---|
 | `keycloak` | `quay.io/keycloak/keycloak:22.0.1` | Identity Provider / Authentifizierung |
-| `keycloak-mysql` | `mysql:8.0` | Persistente Datenbank für Keycloak |
+| `keycloak-mysql` | `mysql:8.0` | persistente Keycloak-Datenbank |
 
-Die laufenden Container können mit folgendem Befehl geprüft werden:
-
-```bash
-docker ps
-```
-
-Keycloak ist lokal über folgende Adresse erreichbar:
-
-```text
-http://localhost:8180
-```
-
-Die Keycloak Admin Console ist ebenfalls über diese Adresse erreichbar.
-
-## Container starten
-
-Falls die Container bereits erstellt wurden, können sie mit folgendem Befehl gestartet werden:
+Container starten:
 
 ```bash
 docker start keycloak-mysql keycloak
 ```
 
-Der Status kann anschließend mit folgendem Befehl geprüft werden:
+Status prüfen:
 
 ```bash
 docker ps
+```
+
+Keycloak ist erreichbar unter:
+
+```text
+http://localhost:8180
 ```
 
 ---
 
 ## Keycloak-Konfiguration
 
-Für die Blog-API wird der Realm
+### Realm
 
 ```text
 blog
 ```
 
-verwendet.
-
 ### Client
-
-Der Client heißt:
 
 ```text
 blog-api
 ```
 
-Für den Token-Abruf mit Benutzername und Passwort muss beim Client **Direct Access Grants** aktiviert sein.
+Beim Client ist **Direct Access Grants** aktiviert.
 
 ### Realm-Rollen
-
-Im Realm `blog` sind folgende Rollen eingerichtet:
 
 - `reader`
 - `author`
@@ -563,53 +306,58 @@ Im Realm `blog` sind folgende Rollen eingerichtet:
 
 ### Test-Benutzer
 
-Für lokale Tests werden folgende Benutzer verwendet:
+| Benutzer | Rolle | Verwendung |
+|---|---|---|
+| `reader1` | `reader` | Test fehlender Schreibrechte |
+| `author1` | `author` | Erstellt und bearbeitet eigene Blogs |
+| `author2` | `author` | Test der Ownership-Prüfung |
+| `admin1` | `admin` | Test administrativer Zugriffe |
 
-| Benutzer | Rolle |
-|---|---|
-| `reader1` | `reader` |
-| `author1` | `author` |
-| `admin1` | `admin` |
+Für die Test-Benutzer werden nicht-temporäre Passwörter verwendet.
 
-Für die Test-Benutzer werden nicht-temporäre Passwörter gesetzt.
+Die Passwörter werden nicht im Repository gespeichert.
 
-Anschließend wird den Benutzern über **Role Mapping** die passende Realm-Rolle zugewiesen.
+---
 
-### Manuelle Konfiguration
+# Quarkus mit eigenem Keycloak starten
 
-Falls die Keycloak-Konfiguration neu erstellt werden muss, sind folgende Schritte notwendig:
+In `application.properties` ist ein eigenes Profil definiert:
 
-1. Realm `blog` erstellen.
-2. Realm-Rollen `reader`, `author` und `admin` erstellen.
-3. Client `blog-api` erstellen.
-4. Beim Client `Direct Access Grants` aktivieren.
-5. Benutzer `reader1`, `author1` und `admin1` erstellen.
-6. Jedem Benutzer ein nicht-temporäres Passwort vergeben.
-7. Jedem Benutzer über **Role Mapping** die passende Realm-Rolle zuweisen.
+```properties
+%keycloak.quarkus.oidc.auth-server-url=http://localhost:8180/realms/blog
+%keycloak.quarkus.oidc.client-id=blog-api
+```
+
+Start:
+
+```bash
+./mvnw quarkus:dev -Dquarkus.profile=keycloak
+```
 
 ---
 
 # Access-Token mit HTTPie abrufen
 
-Für den Test wurde der Benutzer `author1` verwendet.
+Die Tests wurden unter WSL Ubuntu durchgeführt.
 
-Der Token wird über den OpenID-Connect-Token-Endpoint des Realms `blog` abgerufen.
+Beispiel für `author1`:
 
-Beispiel:
-
-```powershell
-python -m httpie --form POST http://localhost:8180/realms/blog/protocol/openid-connect/token client_id=blog-api username=author1 password=PASSWORD grant_type=password
+```bash
+python3 -m httpie --form POST \
+  http://localhost:8180/realms/blog/protocol/openid-connect/token \
+  client_id=blog-api \
+  username=author1 \
+  password=PASSWORD \
+  grant_type=password
 ```
 
-Das tatsächliche Passwort wird nicht im Repository gespeichert.
-
-Bei erfolgreicher Authentifizierung antwortet Keycloak mit:
+Eine erfolgreiche Authentifizierung liefert:
 
 ```text
 200 OK
 ```
 
-und liefert unter anderem ein Access-Token:
+und unter anderem:
 
 ```json
 {
@@ -617,13 +365,15 @@ und liefert unter anderem ein Access-Token:
 }
 ```
 
+Passwörter und Access-Tokens werden nicht im Repository gespeichert.
+
 ---
 
 # Token überprüfen
 
-Das erhaltene Access-Token wurde auf `jwt.io` überprüft.
+Das Access-Token wurde auf `jwt.io` überprüft.
 
-Beim Benutzer `author1` ist die zugewiesene Realm-Rolle im Payload unter `realm_access.roles` enthalten.
+Für `author1` ist die Realm-Rolle unter `realm_access.roles` sichtbar.
 
 Beispiel:
 
@@ -637,13 +387,273 @@ Beispiel:
 }
 ```
 
-Damit wurde verifiziert, dass die in Keycloak konfigurierte Rolle korrekt in das Access-Token übernommen wird.
+Damit wurde verifiziert, dass die konfigurierte Benutzerrolle korrekt in das JWT übernommen wird.
 
 ---
 
-# OpenAPI und Swagger UI
+# Manuell getestete Security-Fälle mit eigenem Keycloak
 
-Die REST-API kann während der Entwicklung über Swagger UI getestet werden.
+Folgende Szenarien wurden erfolgreich getestet:
+
+| Test | Ergebnis |
+|---|---|
+| `GET /blogs` ohne Token | `200 OK` |
+| `POST /blogs` ohne Token | `401 Unauthorized` |
+| `POST /blogs` mit `reader1` | `403 Forbidden` |
+| `POST /blogs` mit `author1` | `201 Created` |
+| `author2` bearbeitet Blog von `author1` | `403 Forbidden` |
+| `admin1` bearbeitet Blog von `author1` | `200 OK` |
+
+Damit wurden sowohl Rollenprüfung als auch Ownership-Prüfung erfolgreich verifiziert.
+
+---
+
+# Variante 2 – Quarkus Dev Services for Keycloak
+
+Zusätzlich wurde die Authentifizierung über **Quarkus Dev Services for Keycloak** erfolgreich getestet.
+
+Für diese Variante wird Quarkus ohne das externe `keycloak`-Profil gestartet:
+
+```bash
+./mvnw quarkus:dev
+```
+
+Docker muss dafür laufen.
+
+Dev Services startet automatisch einen Keycloak-Container für die Entwicklungsumgebung.
+
+Für die Testumgebung sind Benutzer und Rollen in `application.properties` definiert.
+
+Beispiel:
+
+```properties
+%dev.quarkus.keycloak.devservices.enabled=true
+
+%dev.quarkus.keycloak.devservices.users.reader1=reader1
+%dev.quarkus.keycloak.devservices.roles.reader1=reader
+
+%dev.quarkus.keycloak.devservices.users.author1=author1
+%dev.quarkus.keycloak.devservices.roles.author1=author
+
+%dev.quarkus.keycloak.devservices.users.author2=author2
+%dev.quarkus.keycloak.devservices.roles.author2=author
+
+%dev.quarkus.keycloak.devservices.users.admin1=admin1
+%dev.quarkus.keycloak.devservices.roles.admin1=admin
+```
+
+Die Dev-Services-Variante wurde erfolgreich gestartet und die geschützten REST-Endpunkte wurden damit getestet.
+
+Damit funktionieren beide geforderten Varianten:
+
+```text
+./mvnw quarkus:dev
+→ Quarkus Dev Services for Keycloak
+
+./mvnw quarkus:dev -Dquarkus.profile=keycloak
+→ eigener Keycloak unter localhost:8180
+```
+
+---
+
+# Swagger UI
+
+Swagger UI ist erreichbar unter:
+
+```text
+http://localhost:8080/q/swagger-ui
+```
+
+OpenAPI:
+
+```text
+http://localhost:8080/q/openapi
+```
+
+Die geschützten Methoden wurden mit Swagger UI sowie mit HTTPie bzw. Bearer-Tokens getestet.
+
+---
+
+# Automatisierte Tests
+
+Die REST- und Security-Funktionalität wird mit folgenden Technologien getestet:
+
+- JUnit
+- `@QuarkusTest`
+- REST Assured
+- `@TestSecurity`
+
+Tests starten:
+
+```bash
+./mvnw test
+```
+
+Aktueller Stand:
+
+```text
+Tests run: 14
+Failures: 0
+Errors: 0
+```
+
+---
+
+## Abgedeckte REST-Tests
+
+Unter anderem werden geprüft:
+
+- erfolgreicher POST
+- Bean Validation
+- ungültige Daten → `400 Bad Request`
+- REST-Responses
+- erwartete HTTP-Statuscodes
+
+Da `POST /blogs` geschützt ist, werden diese Tests mit einem simulierten Benutzer ausgeführt:
+
+```java
+@TestSecurity(user = "author1", roles = {"author"})
+```
+
+---
+
+## Abgedeckte Security-Tests
+
+Automatisch geprüft werden:
+
+- öffentlicher GET ohne Login
+- POST ohne Login
+- `reader` darf keinen Blog erstellen
+- `author` darf Blog erstellen
+- `admin` darf Blog erstellen
+- `author` darf eigenen Blog bearbeiten
+- `author` darf fremden Blog nicht bearbeiten
+- `admin` darf fremden Blog bearbeiten
+- `author` darf keinen Blog löschen
+- `admin` darf Blog löschen
+
+Beispielhafte Erwartungen:
+
+```text
+GET ohne Login         -> 200
+POST ohne Login        -> 401
+reader POST            -> 403
+author POST            -> 201
+author eigener Blog    -> 200
+author fremder Blog    -> 403
+admin fremder Blog     -> 200
+author DELETE          -> 403
+admin DELETE           -> 204
+```
+
+Damit werden sowohl Rollen als auch Ownership kontinuierlich getestet.
+
+---
+
+# CORS
+
+CORS ist in
+
+```text
+src/main/resources/application.properties
+```
+
+konfiguriert.
+
+Beispiel:
+
+```properties
+quarkus.http.cors.enabled=true
+quarkus.http.cors.origins=http://localhost:3000
+quarkus.http.cors.methods=GET,POST,PUT,DELETE
+quarkus.http.cors.headers=Content-Type,Authorization
+```
+
+Der `Authorization`-Header ist explizit erlaubt, damit Bearer-Tokens von einem Frontend an die REST-API gesendet werden können.
+
+---
+
+# API Security / OWASP
+
+## Broken Object Level Authorization
+
+Die API schützt objektbezogene Zugriffe zusätzlich über eine Ownership-Prüfung.
+
+Ein `author` darf nur eigene Blogs bearbeiten.
+
+Ein `admin` darf alle Blogs bearbeiten.
+
+**Status:** Teilweise bis weitgehend abgedeckt.
+
+## Broken Authentication
+
+Die Authentifizierung erfolgt über Keycloak und OpenID Connect.
+
+Geschützte Endpunkte benötigen ein gültiges Access-Token.
+
+**Status:** Grundlegende Authentifizierung umgesetzt.
+
+## Broken Object Property Level Authorization
+
+Request-DTOs definieren, welche Eigenschaften gesetzt werden dürfen.
+
+Nicht frei setzbar sind unter anderem:
+
+- `id`
+- `owner`
+- `comments`
+
+**Status:** Teilweise durch DTOs abgedeckt.
+
+## Unrestricted Resource Consumption
+
+Aktuell fehlen noch:
+
+- Rate Limiting
+- Pagination
+- Request-Limits
+
+**Status:** Noch nicht vollständig abgedeckt.
+
+## Security Misconfiguration
+
+CORS ist eingeschränkt konfiguriert.
+
+Zusätzlich werden keine Passwörter oder Access-Tokens im Repository gespeichert.
+
+**Status:** Teilweise abgedeckt.
+
+---
+
+# Projekt starten
+
+## Dev Services
+
+```bash
+./mvnw quarkus:dev
+```
+
+## Eigener Keycloak
+
+```bash
+docker start keycloak-mysql keycloak
+```
+
+Danach:
+
+```bash
+./mvnw quarkus:dev -Dquarkus.profile=keycloak
+```
+
+---
+
+# Wichtige URLs
+
+API:
+
+```text
+http://localhost:8080
+```
 
 Swagger UI:
 
@@ -651,28 +661,63 @@ Swagger UI:
 http://localhost:8080/q/swagger-ui
 ```
 
-OpenAPI-Definition:
+OpenAPI:
 
 ```text
 http://localhost:8080/q/openapi
 ```
 
-Über Swagger UI können die vorhandenen GET-, POST-, PUT- und DELETE-Endpunkte direkt getestet werden.
+Eigener Keycloak:
+
+```text
+http://localhost:8180
+```
 
 ---
 
-# Projekt starten
+# Noch offene Erweiterungen
 
-Die Quarkus-Anwendung kann im Development Mode gestartet werden:
+Mögliche zukünftige Erweiterungen:
 
-```bash
-./mvnw quarkus:dev
-```
+- Pagination
+- Rate Limiting
+- DTOs für weitere Endpoints
+- REST-Endpunkte für Kommentare
+- produktive Secret-Verwaltung
+- automatisierter Realm-Import
+- weitere Security-Grenzfälle
+- zentrale Exception-Mapper
 
-Anschließend ist die REST-API standardmäßig unter
+---
+
+# Security-Zusammenfassung
+
+Die Blog-API verwendet mehrere Sicherheitsebenen:
 
 ```text
-http://localhost:8080
+Access-Token
+     ↓
+Keycloak / OIDC
+     ↓
+Authentifizierung
+     ↓
+Realm-Rollen
+     ↓
+@RolesAllowed
+     ↓
+SecurityIdentity
+     ↓
+Ownership-Prüfung
+     ↓
+Geschäftslogik
 ```
 
-erreichbar.
+Damit wird geprüft:
+
+- ob ein Benutzer angemeldet ist
+- welche Rolle er besitzt
+- welcher Benutzer konkret angemeldet ist
+- ob ihm der Blog gehört
+- ob ein Administrator unabhängig vom Besitzer zugreifen darf
+
+Beide Keycloak-Varianten wurden erfolgreich getestet und die Regeln sind zusätzlich durch 14 automatisierte Tests abgesichert.
