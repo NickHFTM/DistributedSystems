@@ -4,7 +4,7 @@ Dieses Projekt implementiert eine REST-API zur Verwaltung von Blog-Beiträgen mi
 
 Die REST-Schnittstelle basiert auf **Jakarta REST**. Die Daten werden im JSON-Format übertragen und mit Hibernate ORM / Panache persistiert.
 
-Zusätzlich verfügt die API über:
+Zusätzlich verfügt die Anwendung über:
 
 - Bean Validation
 - Request- und Response-DTOs
@@ -12,23 +12,292 @@ Zusätzlich verfügt die API über:
 - Authentifizierung mit OpenID Connect / Keycloak
 - benutzerbezogene Ownership-Prüfung
 - automatisierte REST- und Security-Tests
+- Blackbox-Integrationstests gegen das fertige Container-Image
+- Containerisierung mit Docker
+- Veröffentlichung des Backend-Images über GitHub Container Registry (GHCR)
+- eingebettete H2 In-Memory-Datenbank im Container-Betrieb
+- durchgängiges Logging mit `io.quarkus.logging.Log`
+
+---
+
+# Architektur
+
+Im Container-Betrieb besteht das System aus folgenden Komponenten:
+
+```text
+Client / HTTPie / Swagger UI
+          |
+          v
+   Quarkus Blog Backend
+          |
+          +---- H2 In-Memory
+          |
+          +---- OIDC ----> Keycloak
+```
+
+Das Blog-Backend wird als Docker-Image über GitHub Container Registry bereitgestellt.
+
+Die Blog-Datenbank läuft als **H2 In-Memory-Datenbank innerhalb des Backend-Prozesses**.
+
+Keycloak läuft separat und übernimmt:
+
+- Authentifizierung
+- Benutzerverwaltung
+- Rollenverwaltung
+- Ausstellung von JWT Access-Tokens
+
+---
+
+# Container-Image
+
+Das Quarkus-Backend wurde als JVM-Container-Image erstellt und auf GitHub Container Registry veröffentlicht.
+
+Image:
+
+```text
+ghcr.io/nickhftm/blog-backend:latest
+```
+
+Das Image ist öffentlich verfügbar.
+
+## Image herunterladen
+
+```bash
+docker pull ghcr.io/nickhftm/blog-backend:latest
+```
+
+## Container-Image-Konfiguration
+
+Die Image-Metadaten sind in `application.properties` definiert:
+
+```properties
+quarkus.container-image.registry=ghcr.io
+quarkus.container-image.group=nickhftm
+quarkus.container-image.name=blog-backend
+quarkus.container-image.tag=latest
+```
+
+Ein neues Image kann mit folgendem Befehl gebaut werden:
+
+```bash
+./mvnw clean package \
+  -DskipTests \
+  -Dquarkus.container-image.build=true
+```
+
+Für die vollständige Validierung inklusive Integrationstests wird stattdessen verwendet:
+
+```bash
+./mvnw verify \
+  -DskipITs=false \
+  -Dquarkus.container-image.build=true
+```
+
+Dabei wird das Container-Image gebaut und anschließend automatisiert als Blackbox getestet.
+
+---
+
+# Datenbank
+
+## H2 In-Memory im Container-Betrieb
+
+Das Backend verwendet im Prod-/Container-Profil eine eingebettete **H2 In-Memory-Datenbank**.
+
+Dadurch ist für die Blog-Anwendung kein zusätzlicher Datenbank-Container notwendig.
+
+```properties
+%prod.quarkus.datasource.db-kind=h2
+%prod.quarkus.datasource.jdbc.url=jdbc:h2:mem:blogdb
+%prod.quarkus.hibernate-orm.schema-management.strategy=drop-and-create
+```
+
+Das Schema wird beim Start automatisch erstellt.
+
+## Test-Datenbank
+
+Für automatisierte Tests wird ebenfalls H2 verwendet.
+
+```properties
+%test.quarkus.datasource.devservices.enabled=false
+%test.quarkus.datasource.db-kind=h2
+%test.quarkus.datasource.jdbc.url=jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1
+%test.quarkus.hibernate-orm.schema-management.strategy=drop-and-create
+```
+
+Damit benötigen auch die Blackbox-Integrationstests keinen externen Datenbankserver.
+
+## Einschränkung
+
+Die Daten befinden sich nur im Arbeitsspeicher.
+
+Wird das Backend beendet oder der Container neu gestartet, gehen die gespeicherten Blog-Beiträge verloren.
+
+H2 wird bewusst als einfache Lösung für diese Ausbildungs- und Containerumgebung eingesetzt.
+
+Für einen produktiven Betrieb wäre eine persistente Datenbank wie PostgreSQL oder MySQL sinnvoll.
+
+---
+
+# Keycloak
+
+Für Authentifizierung und Rollenverwaltung wird **Keycloak** verwendet.
+
+Der Realm wurde aus der manuell konfigurierten und getesteten Keycloak-Instanz exportiert.
+
+Damit können Realm, Client, Rollen und Test-Benutzer reproduzierbar importiert werden.
+
+## Realm
+
+```text
+blog
+```
+
+## Client
+
+```text
+blog-api
+```
+
+Beim Client ist **Direct Access Grants** aktiviert.
+
+## Rollen
+
+- `reader`
+- `author`
+- `admin`
+
+## Test-Benutzer
+
+| Benutzer | Rolle | Verwendung |
+|---|---|---|
+| `reader1` | `reader` | Test fehlender Schreibrechte |
+| `author1` | `author` | Erstellt und bearbeitet eigene Blogs |
+| `author2` | `author` | Test der Ownership-Prüfung |
+| `admin1` | `admin` | Administrative Zugriffe |
+
+Die Benutzer dienen ausschließlich der lokalen Test- und Ausbildungsumgebung.
+
+---
+
+# Keycloak starten
+
+Die exportierte Realm-Konfiguration kann beim Start automatisch importiert werden.
+
+Beispiel:
+
+```bash
+docker run --name blog-keycloak \
+  -p 8180:8080 \
+  -e KEYCLOAK_ADMIN=admin \
+  -e KEYCLOAK_ADMIN_PASSWORD=admin \
+  -v "$HOME/blog-keycloak:/opt/keycloak/data/import" \
+  quay.io/keycloak/keycloak:22.0.1 \
+  start-dev --import-realm
+```
+
+Falls der Container bereits existiert:
+
+```bash
+docker start blog-keycloak
+```
+
+Status prüfen:
+
+```bash
+docker ps
+```
+
+Keycloak:
+
+```text
+http://localhost:8180
+```
+
+Nach dem Import muss der Realm `blog` vorhanden sein.
+
+---
+
+# OIDC-Konfiguration
+
+Die lokale Standardkonfiguration lautet:
+
+```properties
+quarkus.oidc.auth-server-url=http://localhost:8180/realms/blog
+quarkus.oidc.client-id=blog-api
+```
+
+Innerhalb des Backend-Containers zeigt `localhost` jedoch auf den Backend-Container selbst.
+
+Deshalb wird die Keycloak-Adresse beim Containerstart überschrieben:
+
+```text
+QUARKUS_OIDC_AUTH_SERVER_URL
+```
+
+Unter Docker Desktop wird verwendet:
+
+```text
+http://host.docker.internal:8180/realms/blog
+```
+
+---
+
+# Backend lokal als JAR starten
+
+Projekt bauen:
+
+```bash
+./mvnw clean package
+```
+
+Danach:
+
+```bash
+java -jar target/quarkus-app/quarkus-run.jar
+```
+
+Die Anwendung ist erreichbar unter:
+
+```text
+http://localhost:8080
+```
+
+---
+
+# Backend als Container starten
+
+Zuerst das veröffentlichte Image laden:
+
+```bash
+docker pull ghcr.io/nickhftm/blog-backend:latest
+```
+
+Danach:
+
+```bash
+docker run --rm \
+  --name blog-backend \
+  -p 8080:8080 \
+  -e QUARKUS_OIDC_AUTH_SERVER_URL=http://host.docker.internal:8180/realms/blog \
+  ghcr.io/nickhftm/blog-backend:latest
+```
+
+Das Backend läuft im Container im Prod-Profil und verwendet die eingebettete H2-Datenbank.
 
 ---
 
 # REST-Design
 
-Die API stellt Funktionen zum Erstellen, Lesen, Aktualisieren, Löschen und Suchen von Blog-Beiträgen zur Verfügung.
-
 ## Endpoints
 
 | HTTP-Methode | Pfad | Beschreibung | Zugriff |
 |---|---|---|---|
-| GET | `/blogs` | Gibt alle Blog-Beiträge zurück | öffentlich |
-| GET | `/blogs?title={title}` | Sucht Blog-Beiträge anhand des Titels | öffentlich |
-| GET | `/blogs/{id}` | Gibt einen bestimmten Blog-Beitrag zurück | öffentlich |
-| POST | `/blogs` | Erstellt einen neuen Blog-Beitrag | `author`, `admin` |
-| PUT | `/blogs/{id}` | Aktualisiert einen bestehenden Blog-Beitrag | `author`, `admin` + Ownership |
-| DELETE | `/blogs/{id}` | Löscht einen bestehenden Blog-Beitrag | `admin` |
+| GET | `/blogs` | Alle Blogs laden | öffentlich |
+| GET | `/blogs?title={title}` | Blogs nach Titel suchen | öffentlich |
+| GET | `/blogs/{id}` | Einzelnen Blog laden | öffentlich |
+| POST | `/blogs` | Blog erstellen | `author`, `admin` |
+| PUT | `/blogs/{id}` | Blog bearbeiten | `author`, `admin` + Ownership |
+| DELETE | `/blogs/{id}` | Blog löschen | `admin` |
 
 ---
 
@@ -36,12 +305,12 @@ Die API stellt Funktionen zum Erstellen, Lesen, Aktualisieren, Löschen und Such
 
 Für die Eingabevalidierung wird **Jakarta Bean Validation** verwendet.
 
-Aktuell gelten folgende Regeln:
+Regeln:
 
-- `title` darf nicht leer sein.
-- `content` darf nicht leer sein.
+- `title` darf nicht leer sein
+- `content` darf nicht leer sein
 
-Ein ungültiger Request wie
+Beispiel:
 
 ```json
 {
@@ -50,15 +319,13 @@ Ein ungültiger Request wie
 }
 ```
 
-wird bei einem korrekt authentifizierten Benutzer mit
+Ein authentifizierter Benutzer erhält:
 
 ```text
 400 Bad Request
 ```
 
-abgelehnt.
-
-Nicht authentifizierte Benutzer erhalten bei geschützten Endpunkten zuerst
+Ein nicht authentifizierter Benutzer erhält bei einem geschützten Endpoint bereits vorher:
 
 ```text
 401 Unauthorized
@@ -66,24 +333,24 @@ Nicht authentifizierte Benutzer erhalten bei geschützten Endpunkten zuerst
 
 ---
 
-# DTOs und Mapping
+# DTOs
 
 Für `POST /blogs` werden eigene Request- und Response-DTOs verwendet.
 
 ## CreateBlogRequest
 
-Freigegebene Felder:
+Vom Client dürfen gesetzt werden:
 
 - `title`
 - `content`
 
-Nicht direkt freigegeben sind:
+Nicht direkt setzbar sind:
 
 - `id`
-- `comments`
 - `owner`
+- `comments`
 
-Die `id` wird von der Datenbank erzeugt. Der `owner` wird aus dem angemeldeten Benutzer ermittelt.
+Der Besitzer wird serverseitig aus dem authentifizierten Benutzer ermittelt.
 
 ## BlogResponse
 
@@ -93,66 +360,37 @@ Der Response enthält:
 - `title`
 - `content`
 
-Interne Felder wie `owner` werden nicht direkt freigegeben.
-
-## Mapping
-
-```text
-CreateBlogRequest
-        ↓
-      Blog
-        ↓
-Owner aus SecurityIdentity
-        ↓
-   Datenbank
-        ↓
-      Blog
-        ↓
-  BlogResponse
-```
-
-Beispiel:
-
-```java
-Blog blog = new Blog(request.title, request.content);
-
-String username = securityIdentity.getPrincipal().getName();
-blog.setOwner(username);
-
-blogService.addBlog(blog);
-```
+Interne Informationen wie `owner` werden nicht direkt freigegeben.
 
 ---
 
 # Berechtigungskonzept
 
-Die Blog-API verwendet eine Kombination aus:
+Die Zugriffskontrolle besteht aus:
 
-1. rollenbasierter Zugriffskontrolle
-2. benutzerbezogener Ownership-Prüfung
+1. Rollenprüfung
+2. Ownership-Prüfung
 
-## Rollen
+## reader
 
-### reader
+Ein `reader` kann Blogs lesen.
 
-Ein `reader` kann Blog-Beiträge lesen.
+Da GET-Endpunkte öffentlich sind, ist dafür kein Login erforderlich.
 
-Da die GET-Endpunkte öffentlich sind, ist dafür aktuell kein Login notwendig.
-
-### author
+## author
 
 Ein `author` darf:
 
 - Blogs lesen
-- neue Blogs erstellen
+- Blogs erstellen
 - eigene Blogs bearbeiten
 
-Ein `author` darf:
+Ein `author` darf nicht:
 
-- keine fremden Blogs bearbeiten
-- keine Blogs löschen
+- fremde Blogs bearbeiten
+- Blogs löschen
 
-### admin
+## admin
 
 Ein `admin` darf:
 
@@ -173,174 +411,69 @@ Ein `admin` darf:
 
 ---
 
-# Umsetzung der Zugriffskontrolle
+# Umsetzung der Security
 
-Für öffentliche Endpunkte wird verwendet:
+Öffentliche Endpunkte:
 
 ```java
 @PermitAll
 ```
 
-Für das Erstellen und Bearbeiten:
+Erstellen und Bearbeiten:
 
 ```java
 @RolesAllowed({"author", "admin"})
 ```
 
-Für das Löschen:
+Löschen:
 
 ```java
 @RolesAllowed("admin")
 ```
 
-Zusätzlich wird `SecurityIdentity` verwendet, um den aktuell angemeldeten Benutzer zu identifizieren.
+Der angemeldete Benutzer wird über `SecurityIdentity` ermittelt:
 
 ```java
 @Inject
 SecurityIdentity securityIdentity;
 ```
 
-Benutzername:
-
 ```java
 String username = securityIdentity.getPrincipal().getName();
-```
-
-Admin-Prüfung:
-
-```java
-boolean isAdmin = securityIdentity.hasRole("admin");
 ```
 
 Ownership-Prüfung:
 
 ```java
 boolean isOwner = username.equals(existingBlog.getOwner());
+boolean isAdmin = securityIdentity.hasRole("admin");
 
 if (!isAdmin && !isOwner) {
     return Response.status(Response.Status.FORBIDDEN).build();
 }
 ```
 
-Damit reicht die Rolle `author` allein nicht aus. Ein Author muss zusätzlich Besitzer des Blogs sein.
+Damit kann ein `author` nur eigene Blogs bearbeiten.
 
 ---
 
-# HTTP-Statuscodes der Security
+# HTTP-Statuscodes
 
-| Situation | HTTP-Status |
+| Situation | Status |
 |---|---|
 | Öffentlicher Request erfolgreich | `200 OK` |
-| Geschützter Endpoint ohne Login | `401 Unauthorized` |
-| Benutzer angemeldet, Rolle fehlt | `403 Forbidden` |
+| Geschützter Endpoint ohne Token | `401 Unauthorized` |
+| Rolle nicht ausreichend | `403 Forbidden` |
 | Author bearbeitet fremden Blog | `403 Forbidden` |
-| Ressource existiert nicht | `404 Not Found` |
-| Blog erfolgreich erstellt | `201 Created` |
-| Blog erfolgreich gelöscht | `204 No Content` |
-
----
-
-# Keycloak
-
-Für Authentifizierung und Rollenverwaltung wird **Keycloak** verwendet.
-
-Im Projekt wurden beide geforderten Varianten erfolgreich getestet:
-
-1. eigener Keycloak-Docker-Container
-2. Quarkus Dev Services for Keycloak
-
----
-
-# Variante 1 – Eigener Keycloak-Container
-
-## Docker-Setup
-
-Das lokale Setup besteht aus zwei Containern:
-
-| Container | Image | Aufgabe |
-|---|---|---|
-| `keycloak` | `quay.io/keycloak/keycloak:22.0.1` | Identity Provider / Authentifizierung |
-| `keycloak-mysql` | `mysql:8.0` | persistente Keycloak-Datenbank |
-
-Container starten:
-
-```bash
-docker start keycloak-mysql keycloak
-```
-
-Status prüfen:
-
-```bash
-docker ps
-```
-
-Keycloak ist erreichbar unter:
-
-```text
-http://localhost:8180
-```
-
----
-
-## Keycloak-Konfiguration
-
-### Realm
-
-```text
-blog
-```
-
-### Client
-
-```text
-blog-api
-```
-
-Beim Client ist **Direct Access Grants** aktiviert.
-
-### Realm-Rollen
-
-- `reader`
-- `author`
-- `admin`
-
-### Test-Benutzer
-
-| Benutzer | Rolle | Verwendung |
-|---|---|---|
-| `reader1` | `reader` | Test fehlender Schreibrechte |
-| `author1` | `author` | Erstellt und bearbeitet eigene Blogs |
-| `author2` | `author` | Test der Ownership-Prüfung |
-| `admin1` | `admin` | Test administrativer Zugriffe |
-
-Für die Test-Benutzer werden nicht-temporäre Passwörter verwendet.
-
-Die Passwörter werden nicht im Repository gespeichert.
-
----
-
-# Quarkus mit eigenem Keycloak starten
-
-In `application.properties` ist ein eigenes Profil definiert:
-
-```properties
-%keycloak.quarkus.oidc.auth-server-url=http://localhost:8180/realms/blog
-%keycloak.quarkus.oidc.client-id=blog-api
-```
-
-Start:
-
-```bash
-./mvnw quarkus:dev -Dquarkus.profile=keycloak
-```
+| Blog nicht vorhanden | `404 Not Found` |
+| Blog erstellt | `201 Created` |
+| Blog gelöscht | `204 No Content` |
 
 ---
 
 # Access-Token mit HTTPie abrufen
 
-Die Tests wurden unter WSL Ubuntu durchgeführt.
-
-Beispiel für `author1`:
+Beispiel mit `author1`:
 
 ```bash
 python3 -m httpie --form POST \
@@ -351,13 +484,7 @@ python3 -m httpie --form POST \
   grant_type=password
 ```
 
-Eine erfolgreiche Authentifizierung liefert:
-
-```text
-200 OK
-```
-
-und unter anderem:
+Keycloak liefert unter anderem:
 
 ```json
 {
@@ -365,100 +492,84 @@ und unter anderem:
 }
 ```
 
-Passwörter und Access-Tokens werden nicht im Repository gespeichert.
+Passwörter und vollständige Access-Tokens werden nicht im Repository oder in Logs gespeichert.
 
 ---
 
-# Token überprüfen
-
-Das Access-Token wurde auf `jwt.io` überprüft.
-
-Für `author1` ist die Realm-Rolle unter `realm_access.roles` sichtbar.
-
-Beispiel:
-
-```json
-{
-  "realm_access": {
-    "roles": [
-      "author"
-    ]
-  }
-}
-```
-
-Damit wurde verifiziert, dass die konfigurierte Benutzerrolle korrekt in das JWT übernommen wird.
-
----
-
-# Manuell getestete Security-Fälle mit eigenem Keycloak
-
-Folgende Szenarien wurden erfolgreich getestet:
-
-| Test | Ergebnis |
-|---|---|
-| `GET /blogs` ohne Token | `200 OK` |
-| `POST /blogs` ohne Token | `401 Unauthorized` |
-| `POST /blogs` mit `reader1` | `403 Forbidden` |
-| `POST /blogs` mit `author1` | `201 Created` |
-| `author2` bearbeitet Blog von `author1` | `403 Forbidden` |
-| `admin1` bearbeitet Blog von `author1` | `200 OK` |
-
-Damit wurden sowohl Rollenprüfung als auch Ownership-Prüfung erfolgreich verifiziert.
-
----
-
-# Variante 2 – Quarkus Dev Services for Keycloak
-
-Zusätzlich wurde die Authentifizierung über **Quarkus Dev Services for Keycloak** erfolgreich getestet.
-
-Für diese Variante wird Quarkus ohne das externe `keycloak`-Profil gestartet:
+# Token in Shell-Variable speichern
 
 ```bash
-./mvnw quarkus:dev
+TOKEN=$(python3 -m httpie --body --form POST \
+  http://localhost:8180/realms/blog/protocol/openid-connect/token \
+  client_id=blog-api \
+  username=author1 \
+  password=PASSWORD \
+  grant_type=password | \
+  python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 ```
 
-Docker muss dafür laufen.
+---
 
-Dev Services startet automatisch einen Keycloak-Container für die Entwicklungsumgebung.
+# Öffentlichen Endpoint mit HTTPie testen
 
-Für die Testumgebung sind Benutzer und Rollen in `application.properties` definiert.
-
-Beispiel:
-
-```properties
-%dev.quarkus.keycloak.devservices.enabled=true
-
-%dev.quarkus.keycloak.devservices.users.reader1=reader1
-%dev.quarkus.keycloak.devservices.roles.reader1=reader
-
-%dev.quarkus.keycloak.devservices.users.author1=author1
-%dev.quarkus.keycloak.devservices.roles.author1=author
-
-%dev.quarkus.keycloak.devservices.users.author2=author2
-%dev.quarkus.keycloak.devservices.roles.author2=author
-
-%dev.quarkus.keycloak.devservices.users.admin1=admin1
-%dev.quarkus.keycloak.devservices.roles.admin1=admin
+```bash
+python3 -m httpie GET http://localhost:8080/blogs
 ```
 
-Die Dev-Services-Variante wurde erfolgreich gestartet und die geschützten REST-Endpunkte wurden damit getestet.
-
-Damit funktionieren beide geforderten Varianten:
+Erwartet:
 
 ```text
-./mvnw quarkus:dev
-→ Quarkus Dev Services for Keycloak
-
-./mvnw quarkus:dev -Dquarkus.profile=keycloak
-→ eigener Keycloak unter localhost:8180
+200 OK
 ```
+
+---
+
+# Geschützten Endpoint mit HTTPie testen
+
+```bash
+python3 -m httpie POST http://localhost:8080/blogs \
+  Authorization:"Bearer $TOKEN" \
+  title="Container Test" \
+  content="Dieser Blog wurde über HTTPie erstellt"
+```
+
+Erwartet:
+
+```text
+201 Created
+```
+
+---
+
+# Ownership testen
+
+`author1` erstellt einen Blog.
+
+Versucht anschließend `author2`, diesen Blog zu verändern:
+
+```text
+403 Forbidden
+```
+
+Ein `admin` darf denselben Blog bearbeiten:
+
+```text
+200 OK
+```
+
+Damit wird die Ownership-Prüfung zusätzlich zur Rollenprüfung durchgesetzt.
 
 ---
 
 # Swagger UI
 
-Swagger UI ist erreichbar unter:
+Swagger UI ist auch im Prod-/Container-Build enthalten.
+
+```properties
+quarkus.swagger-ui.always-include=true
+```
+
+Swagger UI:
 
 ```text
 http://localhost:8080/q/swagger-ui
@@ -470,20 +581,102 @@ OpenAPI:
 http://localhost:8080/q/openapi
 ```
 
-Die geschützten Methoden wurden mit Swagger UI sowie mit HTTPie bzw. Bearer-Tokens getestet.
+---
+
+# Logging
+
+Die Anwendung verwendet durchgängig:
+
+```java
+io.quarkus.logging.Log
+```
+
+Es wird kein eigener Logger über `LoggerFactory` erzeugt.
+
+## Logging-Konzept
+
+### DEBUG
+
+Technische Details:
+
+- Suchanfragen
+- Datenbankzugriffe
+- Anzahl geladener Einträge
+
+### INFO
+
+Wichtige System- und Geschäftsereignisse:
+
+- Backend gestartet
+- Blog erstellt
+- Blog aktualisiert
+- Blog gelöscht
+- erfolgreicher Zugriff
+
+### WARN
+
+Auffällige oder unerlaubte Ereignisse:
+
+- Blog nicht gefunden
+- Author versucht fremden Blog zu verändern
+- unerlaubte Zugriffsversuche
+
+### ERROR
+
+Technische Fehler und unerwartete Exceptions.
+
+---
+
+# Startup-Logging
+
+Beim Start werden wichtige Systemzustände protokolliert.
+
+Beispiel:
+
+```text
+Blog Backend wurde erfolgreich gestartet
+Persistenz ist konfiguriert
+Authentifizierung: OIDC / Keycloak konfiguriert
+```
+
+---
+
+# Logging-Konfiguration
+
+```properties
+quarkus.log.level=INFO
+
+%dev.quarkus.log.category."ch.hftm".level=DEBUG
+%dev.quarkus.log.category."org.hibernate.SQL".level=DEBUG
+
+%prod.quarkus.log.category."ch.hftm".level=INFO
+```
+
+Im Container werden Logs auf `stdout` und `stderr` geschrieben.
+
+Dadurch können sie durch Docker oder später beispielsweise Kubernetes und Grafana Loki gesammelt werden.
+
+## Sicherheitsregel
+
+Folgende Informationen werden nicht geloggt:
+
+- Passwörter
+- vollständige Access-Tokens
+- Client-Secrets
+- andere sensible Zugangsdaten
 
 ---
 
 # Automatisierte Tests
 
-Die REST- und Security-Funktionalität wird mit folgenden Technologien getestet:
+Die Anwendung verwendet:
 
 - JUnit
 - `@QuarkusTest`
 - REST Assured
 - `@TestSecurity`
 
-Tests starten:
+Tests ausführen:
 
 ```bash
 ./mvnw test
@@ -499,68 +692,111 @@ Errors: 0
 
 ---
 
-## Abgedeckte REST-Tests
+# Abgedeckte Security-Tests
 
-Unter anderem werden geprüft:
+Unter anderem werden folgende Fälle automatisiert geprüft:
 
-- erfolgreicher POST
-- Bean Validation
-- ungültige Daten → `400 Bad Request`
-- REST-Responses
-- erwartete HTTP-Statuscodes
-
-Da `POST /blogs` geschützt ist, werden diese Tests mit einem simulierten Benutzer ausgeführt:
-
-```java
-@TestSecurity(user = "author1", roles = {"author"})
+```text
+GET ohne Login          -> 200
+POST ohne Login         -> 401
+reader POST             -> 403
+author POST             -> 201
+author eigener Blog     -> 200
+author fremder Blog     -> 403
+admin fremder Blog      -> 200
+author DELETE           -> 403
+admin DELETE            -> 204
 ```
+
+Damit werden Rollen und Ownership automatisch geprüft.
 
 ---
 
-## Abgedeckte Security-Tests
+# Blackbox-Integrationstests
 
-Automatisch geprüft werden:
+Als optionale Vertiefung wurden zusätzlich **Blackbox-Integrationstests mit `@QuarkusIntegrationTest`** umgesetzt.
 
-- öffentlicher GET ohne Login
-- POST ohne Login
-- `reader` darf keinen Blog erstellen
-- `author` darf Blog erstellen
-- `admin` darf Blog erstellen
-- `author` darf eigenen Blog bearbeiten
-- `author` darf fremden Blog nicht bearbeiten
-- `admin` darf fremden Blog bearbeiten
-- `author` darf keinen Blog löschen
-- `admin` darf Blog löschen
-
-Beispielhafte Erwartungen:
+Die Tests befinden sich unter anderem in:
 
 ```text
-GET ohne Login         -> 200
-POST ohne Login        -> 401
-reader POST            -> 403
-author POST            -> 201
-author eigener Blog    -> 200
-author fremder Blog    -> 403
-admin fremder Blog     -> 200
-author DELETE          -> 403
-admin DELETE           -> 204
+src/test/java/ch/hftm/BlogResourceIT.java
 ```
 
-Damit werden sowohl Rollen als auch Ownership kontinuierlich getestet.
+Sie testen nicht nur die Anwendung innerhalb des Quarkus-Testkontexts, sondern die fertig gebaute Auslieferung.
+
+## Ablauf
+
+Maven führt dabei folgende Schritte aus:
+
+```text
+compile
+   ↓
+test
+   ↓
+package
+   ↓
+Container-Image bauen
+   ↓
+Container starten
+   ↓
+@QuarkusIntegrationTest
+   ↓
+verify
+```
+
+Ausführung:
+
+```bash
+./mvnw verify \
+  -DskipITs=false \
+  -Dquarkus.container-image.build=true
+```
+
+Quarkus baut dabei:
+
+```text
+ghcr.io/nickhftm/blog-backend:latest
+```
+
+und startet anschließend genau dieses Image automatisch als Docker-Container.
+
+Für den Integrationstest wird die Keycloak-Adresse in den gestarteten Container übergeben:
+
+```properties
+quarkus.test.env.QUARKUS_OIDC_AUTH_SERVER_URL=http://host.docker.internal:8180/realms/blog
+```
+
+## Getestete Blackbox-Fälle
+
+`BlogResourceIT` prüft:
+
+```text
+GET /blogs             -> 200
+GET /q/swagger-ui      -> 200
+POST /blogs ohne Token -> 401
+```
+
+Der letzte Testlauf war erfolgreich:
+
+```text
+BlogResourceIT:
+Tests run: 3
+Failures: 0
+Errors: 0
+
+Gesamte Integrationstests:
+Tests run: 4
+Failures: 0
+Errors: 0
+
+BUILD SUCCESS
+```
+
+Damit wird die tatsächlich ausgelieferte Container-Version vor dem Push automatisiert validiert.
 
 ---
 
 # CORS
-
-CORS ist in
-
-```text
-src/main/resources/application.properties
-```
-
-konfiguriert.
-
-Beispiel:
 
 ```properties
 quarkus.http.cors.enabled=true
@@ -569,7 +805,7 @@ quarkus.http.cors.methods=GET,POST,PUT,DELETE
 quarkus.http.cors.headers=Content-Type,Authorization
 ```
 
-Der `Authorization`-Header ist explizit erlaubt, damit Bearer-Tokens von einem Frontend an die REST-API gesendet werden können.
+Der `Authorization`-Header ist explizit erlaubt.
 
 ---
 
@@ -577,147 +813,153 @@ Der `Authorization`-Header ist explizit erlaubt, damit Bearer-Tokens von einem F
 
 ## Broken Object Level Authorization
 
-Die API schützt objektbezogene Zugriffe zusätzlich über eine Ownership-Prüfung.
-
 Ein `author` darf nur eigene Blogs bearbeiten.
 
 Ein `admin` darf alle Blogs bearbeiten.
 
-**Status:** Teilweise bis weitgehend abgedeckt.
+**Status:** weitgehend durch Rollen und Ownership-Prüfung abgedeckt.
 
 ## Broken Authentication
 
-Die Authentifizierung erfolgt über Keycloak und OpenID Connect.
+Authentifizierung erfolgt über Keycloak und OpenID Connect.
 
-Geschützte Endpunkte benötigen ein gültiges Access-Token.
-
-**Status:** Grundlegende Authentifizierung umgesetzt.
+**Status:** umgesetzt.
 
 ## Broken Object Property Level Authorization
 
-Request-DTOs definieren, welche Eigenschaften gesetzt werden dürfen.
+DTOs verhindern, dass Clients beispielsweise `id`, `owner` oder `comments` beim Erstellen frei setzen können.
 
-Nicht frei setzbar sind unter anderem:
-
-- `id`
-- `owner`
-- `comments`
-
-**Status:** Teilweise durch DTOs abgedeckt.
+**Status:** teilweise durch DTOs abgedeckt.
 
 ## Unrestricted Resource Consumption
 
-Aktuell fehlen noch:
+Noch offen:
 
 - Rate Limiting
 - Pagination
 - Request-Limits
 
-**Status:** Noch nicht vollständig abgedeckt.
-
 ## Security Misconfiguration
 
-CORS ist eingeschränkt konfiguriert.
+CORS ist eingeschränkt.
 
-Zusätzlich werden keine Passwörter oder Access-Tokens im Repository gespeichert.
-
-**Status:** Teilweise abgedeckt.
+Secrets und Tokens werden nicht in Logs oder im Repository gespeichert.
 
 ---
 
-# Projekt starten
+# Anwendung komplett starten
 
-## Dev Services
+## 1. Keycloak starten
+
+Falls bereits vorhanden:
 
 ```bash
-./mvnw quarkus:dev
+docker start blog-keycloak
 ```
 
-## Eigener Keycloak
+Ansonsten mit Realm-Import:
 
 ```bash
-docker start keycloak-mysql keycloak
+docker run --name blog-keycloak \
+  -p 8180:8080 \
+  -e KEYCLOAK_ADMIN=admin \
+  -e KEYCLOAK_ADMIN_PASSWORD=admin \
+  -v "$HOME/blog-keycloak:/opt/keycloak/data/import" \
+  quay.io/keycloak/keycloak:22.0.1 \
+  start-dev --import-realm
 ```
 
-Danach:
+## 2. Backend herunterladen
 
 ```bash
-./mvnw quarkus:dev -Dquarkus.profile=keycloak
+docker pull ghcr.io/nickhftm/blog-backend:latest
+```
+
+## 3. Backend starten
+
+```bash
+docker run --rm \
+  --name blog-backend \
+  -p 8080:8080 \
+  -e QUARKUS_OIDC_AUTH_SERVER_URL=http://host.docker.internal:8180/realms/blog \
+  ghcr.io/nickhftm/blog-backend:latest
+```
+
+## 4. API testen
+
+```bash
+python3 -m httpie GET http://localhost:8080/blogs
 ```
 
 ---
 
 # Wichtige URLs
 
-API:
+| Dienst | URL |
+|---|---|
+| Blog API | `http://localhost:8080` |
+| Swagger UI | `http://localhost:8080/q/swagger-ui` |
+| OpenAPI | `http://localhost:8080/q/openapi` |
+| Keycloak | `http://localhost:8180` |
+
+---
+
+# Aktueller Stand
 
 ```text
-http://localhost:8080
-```
-
-Swagger UI:
-
-```text
-http://localhost:8080/q/swagger-ui
-```
-
-OpenAPI:
-
-```text
-http://localhost:8080/q/openapi
-```
-
-Eigener Keycloak:
-
-```text
-http://localhost:8180
+[✓] Quarkus Container-Image erstellt
+[✓] finales Image auf GitHub Container Registry veröffentlicht
+[✓] Image öffentlich verfügbar
+[✓] H2 für Container-Betrieb konfiguriert
+[✓] Keycloak-Realm exportiert und reproduzierbar importierbar
+[✓] Start des Gesamtsystems dokumentiert
+[✓] HTTPie-Aufrufe inklusive Authentifizierung dokumentiert
+[✓] durchgängiges Logging mit io.quarkus.logging.Log
+[✓] Startup-, Geschäfts- und Security-Logging
+[✓] keine Secrets oder vollständigen JWTs in Logs
+[✓] 14 automatisierte REST- und Security-Tests erfolgreich
+[✓] Blackbox-Integrationstests mit @QuarkusIntegrationTest umgesetzt
+[✓] Container-Image automatisiert gestartet und getestet
+[✓] 3 Blog-Blackbox-Tests erfolgreich
+[✓] Maven verify mit BUILD SUCCESS
+[✓] final getestetes Container-Image erneut nach GHCR gepusht
 ```
 
 ---
 
-# Noch offene Erweiterungen
+# Weitere mögliche Vertiefungen
 
-Mögliche zukünftige Erweiterungen:
+Noch nicht umgesetzt sind beispielsweise:
 
+- natives GraalVM-Container-Image
+- Vergleich von JVM- und Native-Startzeit
+- Vergleich des Ressourcenverbrauchs
+- `.env`-Datei oder eigene Config-Mappings für Secrets
+- persistente PostgreSQL-/MySQL-Datenbank
 - Pagination
 - Rate Limiting
-- DTOs für weitere Endpoints
-- REST-Endpunkte für Kommentare
-- produktive Secret-Verwaltung
-- automatisierter Realm-Import
-- weitere Security-Grenzfälle
 - zentrale Exception-Mapper
 
 ---
 
-# Security-Zusammenfassung
+# Zusammenfassung
 
-Die Blog-API verwendet mehrere Sicherheitsebenen:
+Die Anwendung kann vollständig containerisiert betrieben werden.
+
+Das Backend wird über
 
 ```text
-Access-Token
-     ↓
-Keycloak / OIDC
-     ↓
-Authentifizierung
-     ↓
-Realm-Rollen
-     ↓
-@RolesAllowed
-     ↓
-SecurityIdentity
-     ↓
-Ownership-Prüfung
-     ↓
-Geschäftslogik
+ghcr.io/nickhftm/blog-backend:latest
 ```
 
-Damit wird geprüft:
+bereitgestellt.
 
-- ob ein Benutzer angemeldet ist
-- welche Rolle er besitzt
-- welcher Benutzer konkret angemeldet ist
-- ob ihm der Blog gehört
-- ob ein Administrator unabhängig vom Besitzer zugreifen darf
+Keycloak übernimmt Authentifizierung und Rollenverwaltung. Die Blog-Daten werden im Container-Betrieb über H2 In-Memory gespeichert.
 
-Beide Keycloak-Varianten wurden erfolgreich getestet und die Regeln sind zusätzlich durch 14 automatisierte Tests abgesichert.
+Geschützte REST-Endpunkte verwenden Rollen und eine zusätzliche Ownership-Prüfung.
+
+Systemzustände, Geschäftsereignisse und Sicherheitsverletzungen werden mit `io.quarkus.logging.Log` protokolliert.
+
+Die REST- und Security-Regeln werden durch 14 automatisierte Tests geprüft.
+
+Zusätzlich wird das fertig gebaute Container-Image mit `@QuarkusIntegrationTest` als Blackbox gestartet und über HTTP getestet, bevor die Auslieferung veröffentlicht wird.

@@ -1,0 +1,4 @@
+-------------------------------------------------------------------------------
+Test set: ch.hftm.GreetingResourceIT
+-------------------------------------------------------------------------------
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.172 s -- in ch.hftm.GreetingResourceIT
